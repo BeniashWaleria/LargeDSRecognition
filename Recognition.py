@@ -3,11 +3,36 @@ import cv2
 import os
 import numpy as np
 from numpy.linalg import norm
+from  sklearn.metrics import classification_report
+from  sklearn.metrics import accuracy_score
+
+def count_files(basedir):
+    dir_names_ = []
+    num_files_ = []
+    labels_ = []
+    for directory in os.listdir(basedir):
+
+        full_dir = os.path.join(basedir, directory)
+        dir_files = len([item for item in os.listdir(full_dir) if os.path.isfile(os.path.join(full_dir, item))])
+        if dir_files >= 2:
+            labels_.append(directory)
+            dir_names_.append(full_dir)
+            num_files_.append(dir_files)
+
+    return labels_, dir_names_, num_files_
 
 
-def read_image(path):
-    image = cv2.imread(path, cv2.IMREAD_COLOR)
-    return image
+def read_image(path_, array):
+    img = cv2.imread(path_, cv2.IMREAD_COLOR)
+    array.append(img)
+    return img, array
+
+
+def get_embedding(image_, embeddings, model_):
+    faces_ = model_.get(image_)
+   # faces_db.append(faces_[0])
+    embeddings.append(faces_[0].embedding)
+    return  embeddings, faces_[0].embedding
 
 
 def get_label(filename):
@@ -16,63 +41,79 @@ def get_label(filename):
     return name
 
 
-def compute_sim(emb1, emb2):
-    return np.dot(emb1, emb2)/(norm(emb1)*norm(emb2))
+def compute_sim(db_matr, test_vect=None):
+    distances = norm(db_matr - test_vect, 2, 1)
+    angles = np.arccos(db_matr @ test_vect.T / (norm(db_matr, 2, 1) * norm(test_vect, 2))) * 180 / np.pi
+    return angles, distances
 
 
 model = insightface.app.FaceAnalysis()
 ctx_id = -1
 model.prepare(ctx_id=ctx_id, nms=0.4)
-directory = r'C:\Users\User\Desktop\Samples'
-labels = list()
-embeddings = list()
-faces = list()
-images = list()
+threshold = 75
+main_dir = r'C:\Users\User\Desktop\lfw-deepfunneled'
+embeddings_base = list()
+embeddings_test = list()
+faces_base = list()
+faces_test = list()
+images_base = list()
+images_test = list()
+unrecognized = list()
+################################################################
+# extract 2  photos from the folders and create  test and base datasets
+
+labels, dir_names, num_files = count_files(main_dir)
+
+for path in dir_names:
+    (_, _, filenames) = next(os.walk(path))
+    img_base = read_image(os.path.join(path, filenames[0]), images_base)
+    print("read:{}".format(filenames[0]))
+    img_test = read_image(os.path.join(path, filenames[1]), images_test)
+
+img_database = zip(labels, images_base)
 
 ################################################################
-# get labels and embeddings for known photos
+# calculate embeddings for image databasе
+print("GETTING TRAINING EMBEDDINGS ")
 
-for filename_ in os.listdir(directory):
-    img = read_image(directory + "\\" + filename_)
-    images.append(img)
-    faces_im = model.get(img)
-    faces.append(faces_im[0])
-    embeddings.append(faces_im[0].embedding)
-    labels.append(get_label(filename_))
-
-# cv2.resizeWindow("{}".format(get_label(filename_)), 200, 200)
-# cv2.imshow("{}".format(get_label(filename_)), img)
-# cv2.waitKey(0)
-
-for i, label in enumerate(labels):
-    print(i, label)
+for i,image in enumerate(images_base):
+        print(i)
+        get_embedding(image, embeddings_base, model)
 ##################################################################
 # save embeddings and labels to file
-
-np.savez_compressed('database.npz', labels, embeddings)
-
-
+print("SAVING   TRAINING EMBEDDINGS ")
+np.savez_compressed('Database.npz', labels, embeddings_base)
 ###################################################################
-# get embedding for unknown
-test_path = r'C:\Users\User\Desktop\UNKNOWN.jpg'
-test_img = read_image(test_path)
-# cv2.imshow("UNKNOWN", test_img)
-# cv2.waitKey()
-faces_test = model.get(test_img)
-test_emb = faces_test[0].embedding
-np.save('Test.npy', test_emb)
+# get embeddings for unknown and perform face recognition
+min_angles = []
 
-######################################################################
-# perform face  recognition
+predicted_labels = []
+print("READING TRAINING EMBEDDINGS ")
+database = np.load('Database.npz')['arr_1']
+for tested in images_test:
+    t_embeddings, test_vect_ = get_embedding(tested, embeddings_test, model)
+  #  cv2.imshow("UNKNOWN", tested)
+   # cv2.waitKey(0)
+    print("COMPUTING ANGLES ")
+    angles_, distances_ = compute_sim(database, test_vect_)
+    min_angle_ = angles_.min()
+    print(min_angle_)
+    index = angles_.argmin()
+    if min_angle_ < threshold:
+        print("ANGLE:{}".format(min_angle_))
+        print("PREDICTED:{}".format(labels[index]))
+        predicted_labels.append(labels[index])
+    else:
+        predicted_labels.append("Unknown")
+        unrecognized.append(labels[index])
 
-database = np.load('database.npz')['arr_1']
-names = np.load('database.npz')['arr_0']
-test_sample = np.load('Test.npy')
-diff = (database - test_sample)
-ssq = np.sum(diff ** 2, axis=1)
-index = ssq.argmin()
-print("PREDICTION:{}".format(labels[index]))
+result = classification_report(labels, predicted_labels,labels)
 
-####################################################################
-# similarity
-print(compute_sim(test_emb, embeddings[index]))
+print(result)
+
+
+accuracy = accuracy_score(labels,predicted_labels)
+print(accuracy)
+print("UNRECOGNIZED: ")
+print(unrecognized)
+
